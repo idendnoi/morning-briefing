@@ -1,0 +1,35 @@
+name: 매일 아침 브리핑
+
+on:
+  schedule:
+    # 매일 오전 8:03 KST = 23:03 UTC (전날)
+    - cron: '3 23 * * *'
+  workflow_dispatch:   # 수동 실행 (테스트용)
+
+jobs:
+  briefing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright + Chromium
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Run briefing
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: python briefing.py
