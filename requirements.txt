@@ -1,0 +1,8 @@
+playwright
+pykrx
+feedparser
+slack-sdk
+pytz
+requests
+beautifulsoup4
+lxml
