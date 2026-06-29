@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+    #!/usr/bin/env python3
 """매일 아침 8시 브리핑 — GitHub Actions에서 실행"""
 
 import asyncio
@@ -31,7 +31,7 @@ UA_HEADERS = {
 # 날씨 위치 (위도, 경도)
 WEATHER_LOCATIONS = [
     ("시흥 대야동", 37.434, 126.793),
-    ("서울", 37.5665, 126.978),
+    ("숭실대 (동작구)", 37.4967, 126.9572),
 ]
 
 # TradingView 히트맵 URL (URL 인코딩된 형태)
@@ -93,11 +93,22 @@ def _kma_rain_hours(nx: int, ny: int) -> list[tuple[int, int]]:
         "ny": ny,
     }
     resp = requests.get(
-        "http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst",
+        "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst",
         params=params,
         timeout=10,
     )
-    items = resp.json()["response"]["body"]["items"]["item"]
+    print(f"  [KMA] HTTP {resp.status_code}, nx={nx}, ny={ny}")
+    try:
+        data = resp.json()
+    except Exception:
+        raise ValueError(f"응답이 JSON이 아님: {resp.text[:200]}")
+    header = data.get("response", {}).get("header", {})
+    result_code = header.get("resultCode", "??")
+    result_msg = header.get("resultMsg", "??")
+    print(f"  [KMA] resultCode={result_code}, resultMsg={result_msg}")
+    if result_code != "00":
+        raise ValueError(f"기상청 API 오류 {result_code}: {result_msg}")
+    items = data["response"]["body"]["items"]["item"]
     today = now.strftime("%Y%m%d")
     hourly: dict[int, int] = {}
     for it in items:
