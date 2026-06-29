@@ -32,4 +32,5 @@ jobs:
       - name: Run briefing
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          KMA_API_KEY: ${{ secrets.KMA_API_KEY }}
         run: python briefing.py
