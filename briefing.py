@@ -372,8 +372,17 @@ async def take_heatmap_screenshot(ctx, url: str, filepath: str) -> bool:
     page = await ctx.new_page()
     try:
         await page.set_viewport_size({"width": 1600, "height": 820})
+        print(f"히트맵 로딩 시작: {filepath}")
         await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-        await asyncio.sleep(12)  # 차트가 완전히 렌더링될 때까지 대기
+
+        # canvas(차트 영역)가 화면에 나타날 때까지 최대 20초 대기
+        try:
+            await page.wait_for_selector("canvas", state="visible", timeout=20_000)
+            print("  → canvas 감지됨, 5초 추가 대기 (데이터 로딩)")
+            await asyncio.sleep(5)
+        except Exception:
+            print("  → canvas 미감지, 15초 폴백 대기")
+            await asyncio.sleep(15)
 
         # 팝업/쿠키 배너 닫기 시도
         for selector in [
@@ -391,9 +400,11 @@ async def take_heatmap_screenshot(ctx, url: str, filepath: str) -> bool:
                 pass
 
         await page.screenshot(path=filepath, full_page=False)
+        size_kb = os.path.getsize(filepath) // 1024
+        print(f"  → 스크린샷 저장 완료 ({size_kb} KB): {filepath}")
         return True
     except Exception as e:
-        print(f"스크린샷 실패 ({filepath}): {e}")
+        print(f"  → 스크린샷 실패: {e}")
         return False
     finally:
         await page.close()
@@ -401,7 +412,12 @@ async def take_heatmap_screenshot(ctx, url: str, filepath: str) -> bool:
 
 def upload_heatmap(client: WebClient, filepath: str, title: str) -> bool:
     """스크린샷 이미지를 Slack DM으로 전송"""
+    if not os.path.exists(filepath):
+        print(f"업로드 건너뜀 — 파일 없음: {filepath}")
+        return False
     try:
+        size_kb = os.path.getsize(filepath) // 1024
+        print(f"업로드 시도: {title} ({size_kb} KB)")
         client.files_upload_v2(
             channel=SLACK_USER_ID,
             file=filepath,
@@ -411,6 +427,9 @@ def upload_heatmap(client: WebClient, filepath: str, title: str) -> bool:
         return True
     except SlackApiError as e:
         print(f"이미지 업로드 실패 ({title}): {e.response['error']}")
+        return False
+    except Exception as e:
+        print(f"이미지 업로드 오류 ({title}): {e}")
         return False
 
 
@@ -460,14 +479,25 @@ async def main():
     ai_text = get_ai_news_section()
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
+        browser = await pw.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-blink-features=AutomationControlled",  # 봇 감지 우회
+            ],
+        )
         ctx = await browser.new_context(
             locale="ko-KR",
+            viewport={"width": 1600, "height": 900},
             user_agent=(
-                "Mozilla/5.0 (X11; Linux x86_64) "
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/124.0.0.0 Safari/537.36"
             ),
+        )
+        # 자동화 탐지 속성 숨기기
+        await ctx.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         )
         page = await ctx.new_page()
 
