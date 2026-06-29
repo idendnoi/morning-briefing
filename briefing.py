@@ -45,6 +45,11 @@ HEATMAP_URLS = {
 # 공통: 기사 원문 페이지의 meta description을 가져와 한줄 요약으로 사용
 # ──────────────────────────────────────────────
 def fetch_meta_description(url: str, timeout: int = 8, max_len: int = 90) -> str:
+    # Google News RSS 링크를 따라가면 구글 집계 페이지 설명이 나옴 → 무시
+    SKIP_PHRASES = [
+        "Comprehensive up-to-date news coverage",
+        "aggregated from sources all over the world",
+    ]
     try:
         resp = requests.get(url, headers=UA_HEADERS, timeout=timeout, allow_redirects=True)
         soup = BeautifulSoup(resp.text, "html.parser")
@@ -53,6 +58,8 @@ def fetch_meta_description(url: str, timeout: int = 8, max_len: int = 90) -> str
         )
         if meta and meta.get("content"):
             text = re.sub(r"\s+", " ", meta["content"]).strip()
+            if any(p in text for p in SKIP_PHRASES):
+                return ""
             if len(text) > max_len:
                 text = text[:max_len].rsplit(" ", 1)[0] + "..."
             return text
@@ -256,6 +263,7 @@ async def get_linkareer(page) -> list[dict]:
                 title_el = a.select_one("[class*='title'], h2, h3, strong")
                 deadline_el = a.select_one("[class*='deadline'], [class*='date'], time, [class*='dday']")
                 title = title_el.get_text(strip=True) if title_el else a.get_text(strip=True)
+                title = re.sub(r"^추천\s*", "", title).strip()  # "추천" 뱃지 텍스트 제거
                 deadline = deadline_el.get_text(strip=True) if deadline_el else "마감일 확인"
                 href = a.get("href", "")
                 full_url = f"https://linkareer.com{href}" if href.startswith("/") else href
