@@ -7,12 +7,12 @@ import os
 import re
 from datetime import datetime, timedelta
 
+import FinanceDataReader as fdr
 import feedparser
 import pytz
 import requests
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
-from pykrx import stock as krx
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
@@ -199,11 +199,10 @@ def attach_summaries(items: list[dict]) -> list[dict]:
 # ──────────────────────────────────────────────
 def get_stock_price_line() -> str:
     today = datetime.now(KST)
-    start = (today - timedelta(days=10)).strftime("%Y%m%d")
-    end = today.strftime("%Y%m%d")
+    start = (today - timedelta(days=10)).strftime("%Y-%m-%d")
 
     try:
-        df = krx.get_market_ohlcv_by_date(start, end, "058470")
+        df = fdr.DataReader("058470", start)
         if df.empty:
             raise ValueError("데이터 없음")
 
@@ -211,14 +210,14 @@ def get_stock_price_line() -> str:
         row = df.iloc[-1]
         prev = df.iloc[-2] if len(df) >= 2 else None
 
-        close = int(row["종가"])
-        high = int(row["고가"])
-        low = int(row["저가"])
-        vol = int(row["거래량"])
+        close = int(row["Close"])
+        high = int(row["High"])
+        low = int(row["Low"])
+        vol = int(row["Volume"])
 
         if prev is not None:
-            diff = close - int(prev["종가"])
-            pct = diff / int(prev["종가"]) * 100
+            diff = close - int(prev["Close"])
+            pct = diff / int(prev["Close"]) * 100
             sign = "▲" if diff >= 0 else "▼"
             change_str = f"{sign} {abs(diff):,}원 ({pct:+.2f}%)"
         else:
