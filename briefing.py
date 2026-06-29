@@ -410,21 +410,20 @@ async def take_heatmap_screenshot(ctx, url: str, filepath: str) -> bool:
         await page.close()
 
 
-def upload_heatmap(client: WebClient, filepath: str, title: str) -> bool:
-    """스크린샷 이미지를 Slack DM으로 전송"""
+def upload_heatmap(client: WebClient, filepath: str, title: str, dm_channel_id: str) -> bool:
+    """스크린샷 이미지를 Slack DM으로 전송 (dm_channel_id: D로 시작하는 채널 ID)"""
     if not os.path.exists(filepath):
         print(f"업로드 건너뜀 — 파일 없음: {filepath}")
         return False
     try:
         size_kb = os.path.getsize(filepath) // 1024
-        print(f"업로드 시도: {title} ({size_kb} KB)")
-        with open(filepath, "rb") as f:
-            client.files_upload(
-                channels=SLACK_USER_ID,
-                file=f,
-                filename=os.path.basename(filepath),
-                title=title,
-            )
+        print(f"업로드 시도: {title} ({size_kb} KB) → {dm_channel_id}")
+        client.files_upload_v2(
+            channel=dm_channel_id,
+            file=filepath,
+            filename=os.path.basename(filepath),
+            title=title,
+        )
         return True
     except SlackApiError as e:
         print(f"이미지 업로드 실패 ({title}): {e.response['error']}")
@@ -522,14 +521,15 @@ async def main():
 
     client = WebClient(token=SLACK_BOT_TOKEN)
 
-    # 텍스트 브리핑 먼저 전송
+    # 텍스트 브리핑 먼저 전송 — 응답의 channel 값이 실제 DM 채널 ID (D...)
     try:
         resp = client.chat_postMessage(
             channel=SLACK_USER_ID,
             text=message,
             mrkdwn=True,
         )
-        print(f"\n✅ Slack 전송 성공 — ts: {resp['ts']}")
+        dm_channel_id = resp["channel"]  # 이후 파일 업로드에 사용
+        print(f"\n✅ Slack 전송 성공 — ts: {resp['ts']}, 채널: {dm_channel_id}")
     except SlackApiError as e:
         print(f"\n❌ Slack 전송 실패: {e.response['error']}")
         raise
@@ -541,7 +541,7 @@ async def main():
     }
     for name, filepath in heatmap_paths.items():
         title = heatmap_titles.get(name, name)
-        ok = upload_heatmap(client, filepath, title)
+        ok = upload_heatmap(client, filepath, title, dm_channel_id)
         print(f"{'✅' if ok else '❌'} {title} 업로드 {'성공' if ok else '실패'}")
 
 
