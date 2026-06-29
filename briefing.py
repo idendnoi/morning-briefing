@@ -489,6 +489,7 @@ async def main():
         ctx = await browser.new_context(
             locale="ko-KR",
             viewport={"width": 1600, "height": 900},
+            device_scale_factor=2,  # 2배 해상도 렌더링 → 스크린샷 화질 개선
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
