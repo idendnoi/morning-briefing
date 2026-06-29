@@ -418,12 +418,13 @@ def upload_heatmap(client: WebClient, filepath: str, title: str) -> bool:
     try:
         size_kb = os.path.getsize(filepath) // 1024
         print(f"업로드 시도: {title} ({size_kb} KB)")
-        client.files_upload_v2(
-            channel=SLACK_USER_ID,
-            file=filepath,
-            filename=os.path.basename(filepath),
-            title=title,
-        )
+        with open(filepath, "rb") as f:
+            client.files_upload(
+                channels=SLACK_USER_ID,
+                file=f,
+                filename=os.path.basename(filepath),
+                title=title,
+            )
         return True
     except SlackApiError as e:
         print(f"이미지 업로드 실패 ({title}): {e.response['error']}")
@@ -535,8 +536,8 @@ async def main():
 
     # 히트맵 이미지 업로드 (실패해도 전체 실행 중단 안 함)
     heatmap_titles = {
-        "KOSPI": "📊 코스피 시장 히트맵",
-        "SPX500": "📊 S&P 500 히트맵",
+        "KOSPI": "코스피 시장 히트맵",
+        "SPX500": "S&P 500 히트맵",
     }
     for name, filepath in heatmap_paths.items():
         title = heatmap_titles.get(name, name)
