@@ -26,6 +26,12 @@ UA_HEADERS = {
     )
 }
 
+# 날씨 위치 (위도, 경도)
+WEATHER_LOCATIONS = [
+    ("시흥 대야동", 37.434, 126.793),
+    ("서울", 37.5665, 126.978),
+]
+
 # TradingView 히트맵 URL (URL 인코딩된 형태)
 HEATMAP_URLS = {
     "KOSPI": (
@@ -39,6 +45,71 @@ HEATMAP_URLS = {
         "%22blockSize%22%3A%22market_cap_basic%22%2C%22grouping%22%3A%22sector%22%7D"
     ),
 }
+
+
+# ──────────────────────────────────────────────
+# 0. 날씨 브리핑 — Open-Meteo (무료, API 키 불필요)
+# ──────────────────────────────────────────────
+_UV_LABELS = [(2, "낮음"), (5, "보통"), (7, "높음"), (10, "매우 높음"), (99, "위험")]
+
+
+def _parse_open_meteo(lat: float, lon: float) -> dict:
+    url = (
+        "https://api.open-meteo.com/v1/forecast"
+        f"?latitude={lat}&longitude={lon}"
+        "&hourly=precipitation_probability,precipitation,uv_index"
+        "&timezone=Asia%2FSeoul&forecast_days=1"
+    )
+    data = requests.get(url, timeout=10).json()["hourly"]
+    times, probs, uvs = data["time"], data["precipitation_probability"], data["uv_index"]
+
+    rain_hours: list[tuple[int, int]] = []
+    uv_peak, uv_peak_h = 0.0, 12
+
+    for i, t in enumerate(times):
+        h = int(t[11:13])
+        prob = probs[i] or 0
+        if prob >= 30:
+            rain_hours.append((h, prob))
+        uv_val = uvs[i] or 0.0
+        if uv_val > uv_peak:
+            uv_peak, uv_peak_h = uv_val, h
+
+    return {"rain_hours": rain_hours, "uv_peak": uv_peak, "uv_peak_h": uv_peak_h}
+
+
+def _fmt_rain(rain_hours: list[tuple[int, int]]) -> str:
+    if not rain_hours:
+        return "☀️ 비 없음"
+    # 연속된 시간대를 하나의 구간으로 묶기
+    periods: list[str] = []
+    s, e, mp = rain_hours[0][0], rain_hours[0][0], rain_hours[0][1]
+    for h, p in rain_hours[1:]:
+        if h == e + 1:
+            e, mp = h, max(mp, p)
+        else:
+            periods.append(f"{s:02d}시~{e + 1:02d}시 ({mp}%)")
+            s, e, mp = h, h, p
+    periods.append(f"{s:02d}시~{e + 1:02d}시 ({mp}%)")
+    return "🌧 " + ", ".join(periods)
+
+
+def _fmt_uv(uv: float, h: int) -> str:
+    label = next(lb for thr, lb in _UV_LABELS if uv <= thr)
+    return f"자외선 {uv:.0f} ({label}, {h:02d}시 최고)"
+
+
+def get_weather_section() -> str:
+    lines: list[str] = []
+    for name, lat, lon in WEATHER_LOCATIONS:
+        try:
+            w = _parse_open_meteo(lat, lon)
+            rain = _fmt_rain(w["rain_hours"])
+            uv = _fmt_uv(w["uv_peak"], w["uv_peak_h"])
+            lines.append(f"*{name}*  {rain}  |  {uv}")
+        except Exception as e:
+            lines.append(f"*{name}*  날씨 조회 실패 ({e})")
+    return "\n".join(lines)
 
 
 # ──────────────────────────────────────────────
@@ -436,11 +507,12 @@ def upload_heatmap(client: WebClient, filepath: str, title: str, dm_channel_id: 
 # ──────────────────────────────────────────────
 # 메시지 조합
 # ──────────────────────────────────────────────
-def build_message(stock: str, ai: str, linkareer: list, ssu: dict) -> str:
+def build_message(weather: str, stock: str, ai: str, linkareer: list, ssu: dict) -> str:
     now = datetime.now(KST)
     weekdays = ["월", "화", "수", "목", "금", "토", "일"]
     header = f"📅 *{now.strftime('%Y년 %m월 %d일')} ({weekdays[now.weekday()]}) 아침 브리핑*"
 
+    s0 = f"🌤 *오늘 날씨*\n{weather}"
     s1 = f"📊 *리노공업 (058470)*\n{stock}"
     s2 = f"🤖 *AI 기술 동향*\n{ai}"
 
@@ -468,13 +540,14 @@ def build_message(stock: str, ai: str, linkareer: list, ssu: dict) -> str:
     s4 = "🏫 *숭실대 공지 (SSU:catch)*\n" + "\n".join(ssu_lines)
 
     sep = "\n\n" + "─" * 30 + "\n\n"
-    return sep.join([header, s1, s2, s3, s4])
+    return sep.join([header, s0, s1, s2, s3, s4])
 
 
 # ──────────────────────────────────────────────
 # 메인
 # ──────────────────────────────────────────────
 async def main():
+    weather_text = get_weather_section()
     stock_text = get_stock_section()
     ai_text = get_ai_news_section()
 
@@ -516,7 +589,7 @@ async def main():
         await ctx.close()
         await browser.close()
 
-    message = build_message(stock_text, ai_text, linkareer_items, ssu_notices)
+    message = build_message(weather_text, stock_text, ai_text, linkareer_items, ssu_notices)
     print("=== 전송할 메시지 ===")
     print(message)
 
