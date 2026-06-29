@@ -2,6 +2,7 @@
 """매일 아침 8시 브리핑 — GitHub Actions에서 실행"""
 
 import asyncio
+import math
 import os
 import re
 from datetime import datetime, timedelta
@@ -18,6 +19,7 @@ from slack_sdk.errors import SlackApiError
 KST = pytz.timezone("Asia/Seoul")
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
 SLACK_USER_ID = "U0BDNU84FQE"  # idenchoi77@gmail.com
+KMA_API_KEY = os.environ.get("KMA_API_KEY", "")
 
 UA_HEADERS = {
     "User-Agent": (
@@ -48,40 +50,82 @@ HEATMAP_URLS = {
 
 
 # ──────────────────────────────────────────────
-# 0. 날씨 브리핑 — Open-Meteo (무료, API 키 불필요)
+# 0. 날씨 브리핑
+#    강수: 기상청 단기예보 API (한국 날씨 최정확)
+#    자외선: Open-Meteo ECMWF (기상청 단기예보에 UV 미포함)
 # ──────────────────────────────────────────────
 _UV_LABELS = [(2, "낮음"), (5, "보통"), (7, "높음"), (10, "매우 높음"), (99, "위험")]
 
 
-def _parse_open_meteo(lat: float, lon: float) -> dict:
+def _latlon_to_kma_grid(lat: float, lon: float) -> tuple[int, int]:
+    """위경도 → 기상청 Lambert 격자 좌표 (nx, ny) 변환"""
+    DEGRAD = math.pi / 180.0
+    re = 6371.00877 / 5.0
+    slat1, slat2 = 30.0 * DEGRAD, 60.0 * DEGRAD
+    olon, olat = 126.0 * DEGRAD, 38.0 * DEGRAD
+    XO, YO = 43, 136
+
+    sn = math.log(math.cos(slat1) / math.cos(slat2)) / math.log(
+        math.tan(math.pi * 0.25 + slat2 * 0.5) / math.tan(math.pi * 0.25 + slat1 * 0.5)
+    )
+    sf = (math.tan(math.pi * 0.25 + slat1 * 0.5) ** sn) * math.cos(slat1) / sn
+    ro = re * sf / (math.tan(math.pi * 0.25 + olat * 0.5) ** sn)
+    ra = re * sf / (math.tan(math.pi * 0.25 + lat * DEGRAD * 0.5) ** sn)
+    theta = (lon * DEGRAD - olon) * sn
+    if theta > math.pi:
+        theta -= 2.0 * math.pi
+    if theta < -math.pi:
+        theta += 2.0 * math.pi
+    return int(ra * math.sin(theta) + XO + 0.5), int(ro - ra * math.cos(theta) + YO + 0.5)
+
+
+def _kma_rain_hours(nx: int, ny: int) -> list[tuple[int, int]]:
+    """기상청 단기예보 → 오늘 강수확률 30% 이상 시간대 [(hour, pop%)]"""
+    now = datetime.now(KST)
+    params = {
+        "serviceKey": KMA_API_KEY,
+        "numOfRows": "1000",
+        "pageNo": "1",
+        "dataType": "JSON",
+        "base_date": now.strftime("%Y%m%d"),
+        "base_time": "0500",
+        "nx": nx,
+        "ny": ny,
+    }
+    resp = requests.get(
+        "http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst",
+        params=params,
+        timeout=10,
+    )
+    items = resp.json()["response"]["body"]["items"]["item"]
+    today = now.strftime("%Y%m%d")
+    hourly: dict[int, int] = {}
+    for it in items:
+        if it["fcstDate"] == today and it["category"] == "POP":
+            hourly[int(it["fcstTime"][:2])] = int(it["fcstValue"])
+    return [(h, pop) for h, pop in sorted(hourly.items()) if pop >= 30]
+
+
+def _uv_peak(lat: float, lon: float) -> tuple[float, int]:
+    """Open-Meteo ECMWF → (오늘 최고 자외선지수, 최고 시각)"""
     url = (
         "https://api.open-meteo.com/v1/forecast"
         f"?latitude={lat}&longitude={lon}"
-        "&hourly=precipitation_probability,precipitation,uv_index"
+        "&hourly=uv_index&models=ecmwf_ifs025"
         "&timezone=Asia%2FSeoul&forecast_days=1"
     )
     data = requests.get(url, timeout=10).json()["hourly"]
-    times, probs, uvs = data["time"], data["precipitation_probability"], data["uv_index"]
-
-    rain_hours: list[tuple[int, int]] = []
-    uv_peak, uv_peak_h = 0.0, 12
-
-    for i, t in enumerate(times):
-        h = int(t[11:13])
-        prob = probs[i] or 0
-        if prob >= 30:
-            rain_hours.append((h, prob))
-        uv_val = uvs[i] or 0.0
-        if uv_val > uv_peak:
-            uv_peak, uv_peak_h = uv_val, h
-
-    return {"rain_hours": rain_hours, "uv_peak": uv_peak, "uv_peak_h": uv_peak_h}
+    peak, peak_h = 0.0, 12
+    for i, t in enumerate(data["time"]):
+        v = data["uv_index"][i] or 0.0
+        if v > peak:
+            peak, peak_h = v, int(t[11:13])
+    return peak, peak_h
 
 
 def _fmt_rain(rain_hours: list[tuple[int, int]]) -> str:
     if not rain_hours:
         return "☀️ 비 없음"
-    # 연속된 시간대를 하나의 구간으로 묶기
     periods: list[str] = []
     s, e, mp = rain_hours[0][0], rain_hours[0][0], rain_hours[0][1]
     for h, p in rain_hours[1:]:
@@ -100,13 +144,15 @@ def _fmt_uv(uv: float, h: int) -> str:
 
 
 def get_weather_section() -> str:
+    if not KMA_API_KEY:
+        return "날씨 조회 불가 — GitHub Secret에 KMA_API_KEY 미설정"
     lines: list[str] = []
     for name, lat, lon in WEATHER_LOCATIONS:
         try:
-            w = _parse_open_meteo(lat, lon)
-            rain = _fmt_rain(w["rain_hours"])
-            uv = _fmt_uv(w["uv_peak"], w["uv_peak_h"])
-            lines.append(f"*{name}*  {rain}  |  {uv}")
+            nx, ny = _latlon_to_kma_grid(lat, lon)
+            rain = _fmt_rain(_kma_rain_hours(nx, ny))
+            uv_val, uv_h = _uv_peak(lat, lon)
+            lines.append(f"*{name}*  {rain}  |  {_fmt_uv(uv_val, uv_h)}")
         except Exception as e:
             lines.append(f"*{name}*  날씨 조회 실패 ({e})")
     return "\n".join(lines)
