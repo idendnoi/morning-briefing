@@ -1,4 +1,4 @@
-    #!/usr/bin/env python3
+#!/usr/bin/env python3
 """매일 아침 8시 브리핑 — GitHub Actions에서 실행"""
 
 import asyncio
@@ -159,13 +159,13 @@ def get_weather_section() -> str:
         return "날씨 조회 불가 — GitHub Secret에 KMA_API_KEY 미설정"
     lines: list[str] = []
     for name, lat, lon in WEATHER_LOCATIONS:
+        nx, ny = _latlon_to_kma_grid(lat, lon)
         try:
-            nx, ny = _latlon_to_kma_grid(lat, lon)
             rain = _fmt_rain(_kma_rain_hours(nx, ny))
             uv_val, uv_h = _uv_peak(lat, lon)
             lines.append(f"*{name}*  {rain}  |  {_fmt_uv(uv_val, uv_h)}")
         except Exception as e:
-            lines.append(f"*{name}*  날씨 조회 실패 ({e})")
+            lines.append(f"*{name}*  날씨 조회 실패 (격자 nx={nx}, ny={ny}) — {e}")
     return "\n".join(lines)
 
 
