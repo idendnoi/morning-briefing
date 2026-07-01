@@ -34,6 +34,13 @@ WEATHER_LOCATIONS = [
     ("숭실대 (동작구)", 37.4967, 126.9572),
 ]
 
+# 보유 종목 (이름, 종목코드, 매수 평균단가)
+STOCKS = [
+    {"name": "리노공업", "code": "058470", "avg_price": 99_350},
+    {"name": "현대오토에버", "code": "307950", "avg_price": 542_000},
+    {"name": "TIGER 미국 S&P500", "code": "360750", "avg_price": 26_550},
+]
+
 # TradingView 히트맵 URL (URL 인코딩된 형태)
 HEATMAP_URLS = {
     "KOSPI": (
@@ -51,6 +58,8 @@ HEATMAP_URLS = {
 
 # ──────────────────────────────────────────────
 # 0. 날씨 브리핑
+#    강수: 기상청 단기예보 API (한국 날씨 최정확)
+#    자외선: Open-Meteo ECMWF (기상청 단기예보에 UV 미포함)
 # ──────────────────────────────────────────────
 _UV_LABELS = [(2, "낮음"), (5, "보통"), (7, "높음"), (10, "매우 높음"), (99, "위험")]
 
@@ -193,6 +202,7 @@ def get_weather_section() -> str:
 # 공통: 기사 원문 페이지의 meta description을 가져와 한줄 요약으로 사용
 # ──────────────────────────────────────────────
 def fetch_meta_description(url: str, timeout: int = 8, max_len: int = 90) -> str:
+    # Google News RSS 링크를 따라가면 구글 집계 페이지 설명이 나옴 → 무시
     SKIP_PHRASES = [
         "Comprehensive up-to-date news coverage",
         "aggregated from sources all over the world",
@@ -216,6 +226,7 @@ def fetch_meta_description(url: str, timeout: int = 8, max_len: int = 90) -> str
 
 
 def attach_summaries(items: list[dict]) -> list[dict]:
+    """items: [{"title":..., "link":..., "date":...}, ...] 각 item에 'summary' 키 추가"""
     for it in items:
         summary = fetch_meta_description(it["link"])
         if summary:
@@ -224,14 +235,20 @@ def attach_summaries(items: list[dict]) -> list[dict]:
 
 
 # ──────────────────────────────────────────────
-# 1-A. 리노공업 주가
+# 1-A. 보유 종목 주가  (pykrx → KRX 직접 조회)
 # ──────────────────────────────────────────────
-def get_stock_price_line() -> str:
+def _fmt_change(diff: int, base: int) -> str:
+    pct = diff / base * 100
+    sign = "▲" if diff >= 0 else "▼"
+    return f"{sign} {abs(diff):,}원 ({pct:+.2f}%)"
+
+
+def get_stock_price_line(code: str, avg_price: int) -> str:
     today = datetime.now(KST)
     start = (today - timedelta(days=10)).strftime("%Y-%m-%d")
 
     try:
-        df = fdr.DataReader("058470", start)
+        df = fdr.DataReader(code, start)
         if df.empty:
             raise ValueError("데이터 없음")
 
@@ -245,28 +262,29 @@ def get_stock_price_line() -> str:
         vol = int(row["Volume"])
 
         if prev is not None:
-            diff = close - int(prev["Close"])
-            pct = diff / int(prev["Close"]) * 100
-            sign = "▲" if diff >= 0 else "▼"
-            change_str = f"{sign} {abs(diff):,}원 ({pct:+.2f}%)"
+            change_str = _fmt_change(close - int(prev["Close"]), int(prev["Close"]))
         else:
             change_str = "전일 데이터 없음"
 
+        avg_diff_str = _fmt_change(close - avg_price, avg_price)
+
         return (
             f"*종가 {close:,}원* ({latest_date} 기준)  |  전일比 {change_str}\n"
+            f"매수 평균단가 {avg_price:,}원  |  평단比 {avg_diff_str}\n"
             f"고가 {high:,}원 / 저가 {low:,}원  |  거래량 {vol:,}주\n"
-            f"<https://finance.naver.com/item/main.naver?code=058470|네이버 금융 바로가기>"
+            f"<https://finance.naver.com/item/main.naver?code={code}|네이버 금융 바로가기>"
         )
 
     except Exception as e:
         return (
             f"주가 조회 실패 ({e})\n"
-            "<https://finance.naver.com/item/main.naver?code=058470|네이버 금융에서 직접 확인>"
+            f"매수 평균단가 {avg_price:,}원\n"
+            f"<https://finance.naver.com/item/main.naver?code={code}|네이버 금융에서 직접 확인>"
         )
 
 
 # ──────────────────────────────────────────────
-# 1-B. 리노공업 관련 뉴스/이슈
+# 1-B. 리노공업 관련 뉴스/이슈  (Google News RSS + 기사 meta description)
 # ──────────────────────────────────────────────
 def get_stock_news_section() -> str:
     rss_queries = ["리노공업+058470", "리노공업+주가", "리노공업+실적"]
@@ -312,14 +330,21 @@ def get_stock_news_section() -> str:
     return "\n".join(lines)
 
 
-def get_stock_section() -> str:
-    price = get_stock_price_line()
-    news = get_stock_news_section()
-    return f"{price}\n\n{news}"
+def get_stock_sections() -> dict[str, str]:
+    """{종목명: 브리핑 텍스트} — 리노공업만 관련 뉴스 포함"""
+    sections: dict[str, str] = {}
+    for s in STOCKS:
+        price = get_stock_price_line(s["code"], s["avg_price"])
+        if s["name"] == "리노공업":
+            news = get_stock_news_section()
+            sections[s["name"]] = f"{price}\n\n{news}"
+        else:
+            sections[s["name"]] = price
+    return sections
 
 
 # ──────────────────────────────────────────────
-# 2. AI 기술 동향
+# 2. AI 기술 동향 — 오늘 기사 우선, 없으면 어제 기사 재사용
 # ──────────────────────────────────────────────
 def get_ai_news_section() -> str:
     rss_queries = [
@@ -330,6 +355,7 @@ def get_ai_news_section() -> str:
     skip_kw = {"주식", "코인", "암호화폐", "부동산", "증시", "광고", "채용", "공채"}
 
     def fetch_for_date(target_date):
+        """특정 날짜(KST 기준)에 발행된 AI 뉴스만 수집"""
         items: list[dict] = []
         seen: set[str] = set()
         for q in rss_queries:
@@ -358,9 +384,11 @@ def get_ai_news_section() -> str:
     today = datetime.now(KST).date()
     yesterday = today - timedelta(days=1)
 
+    # 오늘 기사 먼저 시도
     items = fetch_for_date(today)
     using_today = bool(items)
 
+    # 오늘 기사가 없으면 어제 기사 사용
     if not items:
         items = fetch_for_date(yesterday)
 
@@ -384,7 +412,7 @@ def get_ai_news_section() -> str:
 
 
 # ──────────────────────────────────────────────
-# 3. 링커리어 공모전/대외활동
+# 3. 링커리어 공모전/대외활동  (Playwright)
 # ──────────────────────────────────────────────
 async def get_linkareer(page) -> list[dict]:
     items: list[dict] = []
@@ -405,7 +433,7 @@ async def get_linkareer(page) -> list[dict]:
                 title_el = a.select_one("[class*='title'], h2, h3, strong")
                 deadline_el = a.select_one("[class*='deadline'], [class*='date'], time, [class*='dday']")
                 title = title_el.get_text(strip=True) if title_el else a.get_text(strip=True)
-                title = re.sub(r"^추천\s*", "", title).strip()
+                title = re.sub(r"^추천\s*", "", title).strip()  # "추천" 뱃지 텍스트 제거
                 deadline = deadline_el.get_text(strip=True) if deadline_el else "마감일 확인"
                 href = a.get("href", "")
                 full_url = f"https://linkareer.com{href}" if href.startswith("/") else href
@@ -424,7 +452,7 @@ async def get_linkareer(page) -> list[dict]:
 
 
 # ──────────────────────────────────────────────
-# 4. 숭실대 공지사항
+# 4. 숭실대 공지사항 — 신규 없으면 최신 1개 함께 표시
 # ──────────────────────────────────────────────
 SSU_CATEGORIES = {
     "학사": "https://scatch.ssu.ac.kr/%ea%b3%b5%ec%a7%80%ec%82%ac%ed%95%ad/?f&category=%ED%95%99%EC%82%AC&keyword",
@@ -447,12 +475,13 @@ def parse_date(text: str):
 
 
 async def get_ssu_notices(page) -> dict[str, dict]:
+    """각 카테고리별 {"new": [신규공지...], "latest": 최신공지1개} 반환"""
     result: dict[str, dict] = {}
     cutoff = (datetime.now(KST) - timedelta(days=2)).date()
 
     for cat, url in SSU_CATEGORIES.items():
-        all_notices: list[dict] = []
-        new_notices: list[dict] = []
+        all_notices: list[dict] = []   # 날짜 무관하게 수집 (최신 1개 fallback용)
+        new_notices: list[dict] = []   # cutoff 이후 신규 공지만
 
         try:
             await page.goto(url, wait_until="networkidle", timeout=30_000)
@@ -484,7 +513,7 @@ async def get_ssu_notices(page) -> dict[str, dict]:
                     "title": title,
                     "date": post_date.strftime("%m/%d"),
                     "url": full_url,
-                    "_post_date": post_date,
+                    "_post_date": post_date,  # 정렬용 (출력 안 함)
                 }
 
                 if not any(n["title"] == title for n in all_notices):
@@ -496,6 +525,7 @@ async def get_ssu_notices(page) -> dict[str, dict]:
         except Exception:
             pass
 
+        # 최신순 정렬 후 가장 최신 공지 1개 추출
         all_notices.sort(key=lambda x: x["_post_date"], reverse=True)
         latest = all_notices[0] if all_notices else None
 
@@ -505,15 +535,17 @@ async def get_ssu_notices(page) -> dict[str, dict]:
 
 
 # ──────────────────────────────────────────────
-# 5. TradingView 히트맵 스크린샷
+# 5. TradingView 히트맵 스크린샷 (신규 추가)
 # ──────────────────────────────────────────────
 async def take_heatmap_screenshot(ctx, url: str, filepath: str) -> bool:
+    """TradingView 히트맵 페이지를 스크린샷으로 저장"""
     page = await ctx.new_page()
     try:
         await page.set_viewport_size({"width": 1600, "height": 820})
         print(f"히트맵 로딩 시작: {filepath}")
         await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
 
+        # canvas(차트 영역)가 화면에 나타날 때까지 최대 20초 대기
         try:
             await page.wait_for_selector("canvas", state="visible", timeout=20_000)
             print("  → canvas 감지됨, 5초 추가 대기 (데이터 로딩)")
@@ -522,6 +554,7 @@ async def take_heatmap_screenshot(ctx, url: str, filepath: str) -> bool:
             print("  → canvas 미감지, 15초 폴백 대기")
             await asyncio.sleep(15)
 
+        # 팝업/쿠키 배너 닫기 시도
         for selector in [
             "button[class*='close']",
             "[class*='toast'] button",
@@ -548,6 +581,7 @@ async def take_heatmap_screenshot(ctx, url: str, filepath: str) -> bool:
 
 
 def upload_heatmap(client: WebClient, filepath: str, title: str, dm_channel_id: str) -> bool:
+    """스크린샷 이미지를 Slack DM으로 전송 (dm_channel_id: D로 시작하는 채널 ID)"""
     if not os.path.exists(filepath):
         print(f"업로드 건너뜀 — 파일 없음: {filepath}")
         return False
@@ -572,13 +606,17 @@ def upload_heatmap(client: WebClient, filepath: str, title: str, dm_channel_id: 
 # ──────────────────────────────────────────────
 # 메시지 조합
 # ──────────────────────────────────────────────
-def build_message(weather: str, stock: str, ai: str, linkareer: list, ssu: dict) -> str:
+def build_message(weather: str, stocks: dict[str, str], ai: str, linkareer: list, ssu: dict) -> str:
     now = datetime.now(KST)
     weekdays = ["월", "화", "수", "목", "금", "토", "일"]
     header = f"📅 *{now.strftime('%Y년 %m월 %d일')} ({weekdays[now.weekday()]}) 아침 브리핑*"
 
     s0 = f"🌤 *오늘 날씨*\n{weather}"
-    s1 = f"📊 *리노공업 (058470)*\n{stock}"
+    code_by_name = {s["name"]: s["code"] for s in STOCKS}
+    stock_blocks = [
+        f"📊 *{name} ({code_by_name[name]})*\n{text}" for name, text in stocks.items()
+    ]
+    s1 = "\n\n".join(stock_blocks)
     s2 = f"🤖 *AI 기술 동향*\n{ai}"
 
     if linkareer:
@@ -613,7 +651,7 @@ def build_message(weather: str, stock: str, ai: str, linkareer: list, ssu: dict)
 # ──────────────────────────────────────────────
 async def main():
     weather_text = get_weather_section()
-    stock_text = get_stock_section()
+    stock_sections = get_stock_sections()
     ai_text = get_ai_news_section()
 
     async with async_playwright() as pw:
@@ -621,19 +659,20 @@ async def main():
             headless=True,
             args=[
                 "--no-sandbox",
-                "--disable-blink-features=AutomationControlled",
+                "--disable-blink-features=AutomationControlled",  # 봇 감지 우회
             ],
         )
         ctx = await browser.new_context(
             locale="ko-KR",
             viewport={"width": 1600, "height": 900},
-            device_scale_factor=2,
+            device_scale_factor=2,  # 2배 해상도 렌더링 → 스크린샷 화질 개선
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/124.0.0.0 Safari/537.36"
             ),
         )
+        # 자동화 탐지 속성 숨기기
         await ctx.add_init_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         )
@@ -642,6 +681,7 @@ async def main():
         linkareer_items = await get_linkareer(page)
         ssu_notices = await get_ssu_notices(page)
 
+        # 히트맵 스크린샷 (ctx 닫기 전에 실행)
         heatmap_paths: dict[str, str] = {}
         for name, url in HEATMAP_URLS.items():
             filepath = f"/tmp/{name.lower()}_heatmap.png"
@@ -652,24 +692,26 @@ async def main():
         await ctx.close()
         await browser.close()
 
-    message = build_message(weather_text, stock_text, ai_text, linkareer_items, ssu_notices)
+    message = build_message(weather_text, stock_sections, ai_text, linkareer_items, ssu_notices)
     print("=== 전송할 메시지 ===")
     print(message)
 
     client = WebClient(token=SLACK_BOT_TOKEN)
 
+    # 텍스트 브리핑 먼저 전송 — 응답의 channel 값이 실제 DM 채널 ID (D...)
     try:
         resp = client.chat_postMessage(
             channel=SLACK_USER_ID,
             text=message,
             mrkdwn=True,
         )
-        dm_channel_id = resp["channel"]
+        dm_channel_id = resp["channel"]  # 이후 파일 업로드에 사용
         print(f"\n✅ Slack 전송 성공 — ts: {resp['ts']}, 채널: {dm_channel_id}")
     except SlackApiError as e:
         print(f"\n❌ Slack 전송 실패: {e.response['error']}")
         raise
 
+    # 히트맵 이미지 업로드 (실패해도 전체 실행 중단 안 함)
     heatmap_titles = {
         "KOSPI": "코스피 시장 히트맵",
         "SPX500": "S&P 500 히트맵",
