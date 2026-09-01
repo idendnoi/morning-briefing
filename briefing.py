@@ -303,8 +303,11 @@ def get_lunch_menu_section() -> str:
             lines.append(f"*{label}* {cat}{item['main']}\n  └ {sides}")
         return "\n".join(lines)
 
-    except Exception as e:
-        return f"학식 정보 조회 실패 ({e})"
+        except Exception as e:
+        return (
+            f"학식 정보 조회 실패 ({e})\n"
+            "<https://soongguri.com/m/|여기서 직접 확인하세요>"
+        )
 
 
 # ──────────────────────────────────────────────
