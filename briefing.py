@@ -187,7 +187,11 @@ def get_weather_section() -> str:
             try:
                 rain_hours = _kma_rain_hours(nx, ny)
                 rain_src = "기상청"
-            except ValueError:
+            except (ValueError, requests.exceptions.RequestException) as e:
+                # API 오류 응답뿐 아니라 타임아웃/연결 실패 등 네트워크 문제도
+                # 여기서 잡아서 Open-Meteo로 대체 (해외 IP에서 기상청 API가
+                # 막혀 있는 경우가 있어 연결 자체가 실패할 수 있음)
+                print(f"  [KMA] 기상청 API 실패, Open-Meteo로 대체: {e}")
                 rain_hours = _openmeteo_rain_hours(lat, lon)
                 rain_src = "Open-Meteo"
             rain = _fmt_rain(rain_hours)
@@ -246,11 +250,23 @@ def get_lunch_menu_section() -> str:
     """숭실대 생협 학생식당(rcd=1) 오늘의 중식 3종 → Slack 텍스트"""
     today_str = datetime.now(KST).strftime("%Y%m%d")
     try:
-        resp = requests.get(
+        session = requests.Session()
+        session.headers.update(UA_HEADERS)
+        try:
+            # 메인 페이지를 먼저 방문해서 세션 쿠키를 확보 (실패해도 계속 진행)
+            session.get("https://soongguri.com/m/", timeout=10)
+        except requests.exceptions.RequestException:
+            pass
+
+        resp = session.get(
             "https://soongguri.com/m/m_req/m_menu.php",
             params={"rcd": "1", "sdt": today_str},
-            headers=UA_HEADERS,
-            timeout=10,
+            headers={
+                "Referer": "https://soongguri.com/m/",
+                "Accept-Language": "ko-KR,ko;q=0.9",
+                "X-Requested-With": "XMLHttpRequest",
+            },
+            timeout=15,
         )
         print(f"  [학식] HTTP {resp.status_code}, sdt={today_str}, 응답 길이={len(resp.text)}")
         resp.raise_for_status()
