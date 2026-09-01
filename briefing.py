@@ -199,6 +199,87 @@ def get_weather_section() -> str:
 
 
 # ──────────────────────────────────────────────
+# 0-B. 오늘의 학식 (숭실대 학생식당 중식 3종)
+# ──────────────────────────────────────────────
+LUNCH_MENU_LABELS = ["중식1", "중식2", "중식3"]
+
+
+def _clean_side_items(items: list[str]) -> list[str]:
+    """반찬 후보 텍스트 중 실제 반찬명만 채택 (영문 번역/알러지 표시 등 제외)"""
+    return [
+        t for t in items
+        if t and len(t) <= 40 and re.search(r"[가-힣]", t) and not t.startswith("*")
+    ]
+
+
+def _parse_lunch_item(list_td) -> dict | None:
+    """td.menu_list 하나 → {"category":..., "main":..., "sides":[...]} (파싱 실패 시 None)
+
+    이 사이트는 담당자가 매일 수기로 서식을 입력해서 항목마다 태그 구조/스타일이
+    조금씩 달라짐 (예: 메인 메뉴 글자색을 <b style=...>로 넣는 날도 있고
+    <font color=...>로 감싸는 날도 있음, 반찬 목록이 <ul><li>일 때도 있고
+    표(<table>)일 때도 있음). 그래서 태그/스타일이 아니라 텍스트 패턴(★, [..])
+    기준으로 파싱한다.
+    """
+    text = list_td.get_text(" ", strip=True)
+
+    name_match = re.search(r"★\s*(.+?)\s*-\s*([\d.]+)", text)
+    if not name_match:
+        return None
+    main = f"{name_match.group(1)} ({name_match.group(2)})"
+
+    cat_match = re.search(r"\[([^\]]+)\]", text)
+    category = cat_match.group(1) if cat_match else ""
+
+    # 반찬 목록: <ul class="mean_list"> 구조를 우선 시도하고, 없으면 표(<table>) 구조로 대체
+    li_texts = [li.get_text(" ", strip=True) for li in list_td.select("ul.mean_list > li.mean_item")]
+    sides = _clean_side_items(li_texts)
+    if not sides:
+        table = list_td.find("table")
+        if table is not None:
+            sides = _clean_side_items(table.get_text(separator="\n", strip=True).split("\n"))
+
+    return {"category": category, "main": main, "sides": sides}
+
+
+def get_lunch_menu_section() -> str:
+    """숭실대 생협 학생식당(rcd=1) 오늘의 중식 3종 → Slack 텍스트"""
+    today_str = datetime.now(KST).strftime("%Y%m%d")
+    try:
+        resp = requests.get(
+            "https://soongguri.com/m/m_req/m_menu.php",
+            params={"rcd": "1", "sdt": today_str},
+            timeout=10,
+        )
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        items: dict[str, dict | None] = {label: None for label in LUNCH_MENU_LABELS}
+        for td in soup.select("td.menu_nm"):
+            label = td.get_text(strip=True)
+            if label in items:
+                list_td = td.find_next_sibling("td", class_="menu_list")
+                if list_td is not None:
+                    items[label] = _parse_lunch_item(list_td)
+
+        if all(v is None for v in items.values()):
+            return "오늘은 학식 운영을 하지 않습니다."
+
+        lines = []
+        for label in LUNCH_MENU_LABELS:
+            item = items[label]
+            if item is None:
+                lines.append(f"*{label}* 정보 없음")
+                continue
+            cat = f"[{item['category']}] " if item["category"] else ""
+            sides = ", ".join(item["sides"]) if item["sides"] else "-"
+            lines.append(f"*{label}* {cat}{item['main']}\n  └ {sides}")
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"학식 정보 조회 실패 ({e})"
+
+
+# ──────────────────────────────────────────────
 # 공통: 기사 원문 페이지의 meta description을 가져와 한줄 요약으로 사용
 # ──────────────────────────────────────────────
 def fetch_meta_description(url: str, timeout: int = 8, max_len: int = 90) -> str:
@@ -606,12 +687,15 @@ def upload_heatmap(client: WebClient, filepath: str, title: str, dm_channel_id: 
 # ──────────────────────────────────────────────
 # 메시지 조합
 # ──────────────────────────────────────────────
-def build_message(weather: str, stocks: dict[str, str], ai: str, linkareer: list, ssu: dict) -> str:
+def build_message(
+    weather: str, lunch: str, stocks: dict[str, str], ai: str, linkareer: list, ssu: dict
+) -> str:
     now = datetime.now(KST)
     weekdays = ["월", "화", "수", "목", "금", "토", "일"]
     header = f"📅 *{now.strftime('%Y년 %m월 %d일')} ({weekdays[now.weekday()]}) 아침 브리핑*"
 
     s0 = f"🌤 *오늘 날씨*\n{weather}"
+    s_lunch = f"🍱 *오늘의 학식 (숭실대 학생식당)*\n{lunch}"
     code_by_name = {s["name"]: s["code"] for s in STOCKS}
     stock_blocks = [
         f"📊 *{name} ({code_by_name[name]})*\n{text}" for name, text in stocks.items()
@@ -643,7 +727,7 @@ def build_message(weather: str, stocks: dict[str, str], ai: str, linkareer: list
     s4 = "🏫 *숭실대 공지 (SSU:catch)*\n" + "\n".join(ssu_lines)
 
     sep = "\n\n" + "─" * 30 + "\n\n"
-    return sep.join([header, s0, s1, s2, s3, s4])
+    return sep.join([header, s0, s_lunch, s1, s2, s3, s4])
 
 
 # ──────────────────────────────────────────────
@@ -651,6 +735,7 @@ def build_message(weather: str, stocks: dict[str, str], ai: str, linkareer: list
 # ──────────────────────────────────────────────
 async def main():
     weather_text = get_weather_section()
+    lunch_text = get_lunch_menu_section()
     stock_sections = get_stock_sections()
     ai_text = get_ai_news_section()
 
@@ -692,7 +777,9 @@ async def main():
         await ctx.close()
         await browser.close()
 
-    message = build_message(weather_text, stock_sections, ai_text, linkareer_items, ssu_notices)
+    message = build_message(
+        weather_text, lunch_text, stock_sections, ai_text, linkareer_items, ssu_notices
+    )
     print("=== 전송할 메시지 ===")
     print(message)
 
