@@ -249,20 +249,32 @@ def get_lunch_menu_section() -> str:
         resp = requests.get(
             "https://soongguri.com/m/m_req/m_menu.php",
             params={"rcd": "1", "sdt": today_str},
+            headers=UA_HEADERS,
             timeout=10,
         )
+        print(f"  [학식] HTTP {resp.status_code}, sdt={today_str}, 응답 길이={len(resp.text)}")
+        resp.raise_for_status()
+
+        # 사이트가 명시적으로 "오늘은 쉽니다."라고 답할 때만 휴무로 처리.
+        # (이전 버전은 중식1/2/3 태그를 못 찾으면 무조건 휴무로 간주해서,
+        #  네트워크 오류나 페이지 구조 변경 때도 "휴무"로 잘못 표시되는 문제가 있었음)
+        if "오늘은 쉽니다" in resp.text:
+            return "오늘은 학식 운영을 하지 않습니다."
+
         soup = BeautifulSoup(resp.text, "html.parser")
 
         items: dict[str, dict | None] = {label: None for label in LUNCH_MENU_LABELS}
+        found_menu_td = False
         for td in soup.select("td.menu_nm"):
             label = td.get_text(strip=True)
             if label in items:
+                found_menu_td = True
                 list_td = td.find_next_sibling("td", class_="menu_list")
                 if list_td is not None:
                     items[label] = _parse_lunch_item(list_td)
 
-        if all(v is None for v in items.values()):
-            return "오늘은 학식 운영을 하지 않습니다."
+        if not found_menu_td:
+            raise ValueError(f"메뉴 항목을 찾지 못함 (응답 시작: {resp.text[:200]!r})")
 
         lines = []
         for label in LUNCH_MENU_LABELS:
